@@ -1,0 +1,9 @@
+rtl/core_pkg.sv
+rtl/core_decode.sv
+rtl/core_alu.sv
+rtl/core_mul.sv
+rtl/core_div.sv
+rtl/core_bht.sv
+rtl/core_regfile.sv
+rtl/core_csr.sv
+rtl/core_top.sv

@@ -1,0 +1,138 @@
+name: core-regression
+
+on:
+  push:
+  pull_request:
+  schedule:
+    - cron: "0 3 * * *"      # nightly: new riscv-dv programs, CoreMark compare, full regression
+  workflow_dispatch:
+
+env:
+  VERILATOR_VERSION: v5.054
+  SPIKE_COMMIT: 6e188877          # pinned: the commit-log parser depends on Spike's log format
+  RISCV_DV_COMMIT: f557b89
+  XPACK_GCC: 15.2.0-1
+
+jobs:
+  regression:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y git autoconf flex bison help2man perl make g++ \
+               libfl-dev zlib1g-dev ccache z3 python3 python3-venv device-tree-compiler libboost-regex-dev
+
+      # ---------------------------------------------------------------- Verilator
+      - name: Restore Verilator
+        id: cache-verilator
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/verilator
+          key: verilator-${{ env.VERILATOR_VERSION }}-${{ runner.os }}
+      - name: Build Verilator
+        if: steps.cache-verilator.outputs.cache-hit != 'true'
+        run: |
+          git clone --depth 1 --branch $VERILATOR_VERSION https://github.com/verilator/verilator.git vsrc
+          cd vsrc && autoconf && ./configure --prefix=$HOME/verilator && make -j$(nproc) && make install
+      - name: Save Verilator
+        if: steps.cache-verilator.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ~/verilator
+          key: verilator-${{ env.VERILATOR_VERSION }}-${{ runner.os }}
+
+      # ---------------------------------------------------------------- Spike
+      - name: Restore Spike
+        id: cache-spike
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/spike
+          key: spike-${{ env.SPIKE_COMMIT }}-${{ runner.os }}
+      - name: Build Spike
+        if: steps.cache-spike.outputs.cache-hit != 'true'
+        run: |
+          git clone https://github.com/riscv-software-src/riscv-isa-sim.git spike-src
+          cd spike-src && git checkout $SPIKE_COMMIT && mkdir build && cd build
+          ../configure --prefix=$HOME/spike && make -j$(nproc) && make install
+      - name: Save Spike
+        if: steps.cache-spike.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ~/spike
+          key: spike-${{ env.SPIKE_COMMIT }}-${{ runner.os }}
+
+      # ---------------------------------------------------------------- GCC, UVM, riscv-dv, CoreMark
+      - name: Get the RISC-V GCC (xPack)
+        run: |
+          curl -sL https://github.com/xpack-dev-tools/riscv-none-elf-gcc-xpack/releases/download/v$XPACK_GCC/xpack-riscv-none-elf-gcc-$XPACK_GCC-linux-x64.tar.gz \
+            | tar xz -C $HOME
+          echo "$HOME/xpack-riscv-none-elf-gcc-$XPACK_GCC/bin" >> $GITHUB_PATH
+          echo "$HOME/verilator/bin" >> $GITHUB_PATH
+          echo "$HOME/spike/bin" >> $GITHUB_PATH
+
+      - name: Get UVM (copy bundled with Verilator's tests)
+        run: |
+          git clone --depth 1 --branch $VERILATOR_VERSION --filter=blob:none --sparse \
+              https://github.com/verilator/verilator.git vtests
+          cd vtests && git sparse-checkout set test_regress/t/uvm
+          mkdir -p $HOME/uvm && cp test_regress/t/uvm/uvm_pkg_all_v2017_1_0_dpi.svh $HOME/uvm/
+          cp -r test_regress/t/uvm/v2017_1_0/dpi $HOME/uvm/
+          printf '`ifndef UVM_MACROS_SVH\n`error "compile the UVM package first"\n`endif\n' > $HOME/uvm/uvm_macros.svh
+
+      - name: Get riscv-dv and CoreMark
+        run: |
+          git clone https://github.com/chipsalliance/riscv-dv.git $HOME/riscv-dv
+          cd $HOME/riscv-dv && git checkout $RISCV_DV_COMMIT
+          git apply $GITHUB_WORKSPACE/sw/riscv-dv/pyflow_fixes.patch   # PyFlow bug fixes (see bug log)
+          python3 -m venv $HOME/dvenv
+          $HOME/dvenv/bin/pip install -q PyYAML bitstring tabulate "pandas<=2.2.3" \
+              pyvsc==0.9.1.10086043874 pyucis==0.1.3.7162246580 pyboolector==3.2.4.20240823.1
+          ln -s $GITHUB_WORKSPACE/sw/riscv-dv/rv32im $HOME/riscv-dv/pygen/pygen_src/target/rv32im
+          git clone --depth 1 https://github.com/eembc/coremark.git $HOME/coremark
+
+      # ---------------------------------------------------------------- build and run
+      - name: Lint, directed tests on the smoke bench (with and without wait states)
+        run: |
+          make lint
+          make sw sw_irq
+          make smoke
+          make run_all | tee build/run_all.txt
+          make run_all SEED=7 ARGS="+IREADY_PCT=40 +ILAT_MAX=3 +DREADY_PCT=40 +DLAT_MAX=3" | tee -a build/run_all.txt
+          make run_all SEED=8 ARGS="+DREADY_PCT=50 +DLAT_MAX=3" | tee -a build/run_all.txt
+          ! grep -q FAIL build/run_all.txt
+          make run_irq T=irq_random SEED=3
+
+      - name: riscv-dv programs and CoreMark compare (nightly)
+        if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+        run: |
+          RISCV_DV=$HOME/riscv-dv DV_PYTHON=$HOME/dvenv/bin/python3 python3 scripts/gen_riscv_dv.py --seeds 4 -j 4
+          make coremark_cmp COREMARK=$HOME/coremark
+
+      - name: Build UVM bench
+        run: make tb UVM_HOME=$HOME/uvm
+
+      - name: Regression (quick on push, full nightly)
+        run: |
+          if [ "${{ github.event_name }}" = "schedule" ] || [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            python3 scripts/run_regression.py -j 4
+          else
+            python3 scripts/run_regression.py --quick -j 4
+          fi
+
+      - name: CPI result (BHT off vs on)
+        run: make cpi COREMARK=$HOME/coremark
+
+      - name: Upload logs, coverage and CPI result
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: regression-${{ github.run_number }}
+          path: |
+            build/regression/summary.txt
+            build/regression/coverage_summary.txt
+            build/regression/runs/**/sim.log
+            perf/results.md

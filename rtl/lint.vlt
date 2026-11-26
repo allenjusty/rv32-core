@@ -1,0 +1,7 @@
+`verilator_config
+// Intentionally unused bits
+lint_off -rule UNUSEDSIGNAL -file "*rtl/core_bht.sv" -match "*_pc'*"          // only PC[7:2] index the table
+lint_off -rule UNUSEDSIGNAL -file "*rtl/core_mul.sv" -match "*'prod'*"        // top 2 bits of the 66-bit product
+lint_off -rule UNUSEDSIGNAL -file "*rtl/core_csr.sv" -match "*'trap_pc'*"     // mepc bits 1:0 are always 0
+lint_off -rule UNUSEDSIGNAL -file "*rtl/core_top.sv" -match "*'wb_ctrl'*"     // WB needs only a few control bits
+lint_off -rule UNUSEDSIGNAL -file "*rtl/core_top.sv" -match "*'bht_cnt'*"     // the prediction is the counter MSB

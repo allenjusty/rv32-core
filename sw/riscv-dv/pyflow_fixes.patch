@@ -1,0 +1,824 @@
+diff --git a/pygen/pygen_src/isa/riscv_instr.py b/pygen/pygen_src/isa/riscv_instr.py
+index 85aff1c..1d8b740 100644
+--- a/pygen/pygen_src/isa/riscv_instr.py
++++ b/pygen/pygen_src/isa/riscv_instr.py
+@@ -188,21 +188,21 @@ class riscv_instr:
+     def build_basic_instruction_list(cls, cfg):
+         cls.basic_instr = (cls.instr_category["SHIFT"] + cls.instr_category["ARITHMETIC"] +
+                            cls.instr_category["LOGICAL"] + cls.instr_category["COMPARE"])
++        # Fix: use the enum names (instr_template is keyed by them; plain strings gave
++        # KeyError 'EBREAK'), and extend with the category lists instead of nesting them.
+         if cfg.no_ebreak == 0:
+-            cls.basic_instr.append("EBREAK")
+-            for _ in rcs.supported_isa:
+-                if(riscv_instr_group_t.RV32C in rcs.supported_isa and
+-                   not(cfg.disable_compressed_instr)):
+-                    cls.basic_instr.append("C_EBREAK")
+-                    break
++            cls.basic_instr.append(riscv_instr_name_t.EBREAK)
++            if (riscv_instr_group_t.RV32C in rcs.supported_isa and
++                    not(cfg.disable_compressed_instr)):
++                cls.basic_instr.append(riscv_instr_name_t.C_EBREAK)
+         if cfg.no_dret == 0:
+-            cls.basic_instr.append("DRET")
++            cls.basic_instr.append(riscv_instr_name_t.DRET)
+         if cfg.no_fence == 0:
+-            cls.basic_instr.append(cls.instr_category["SYNCH"])
++            cls.basic_instr.extend(cls.instr_category["SYNCH"])
+         if(cfg.no_csr_instr == 0 and cfg.init_privileged_mode == "MACHINE_MODE"):
+-            cls.basic_instr.append(cls.instr_category["CSR"])
++            cls.basic_instr.extend(cls.instr_category["CSR"])
+         if cfg.no_wfi == 0:
+-            cls.basic_instr.append("WFI")
++            cls.basic_instr.append(riscv_instr_name_t.WFI)
+ 
+     @classmethod
+     def create_csr_filter(cls, cfg):
+@@ -243,34 +243,25 @@ class riscv_instr:
+ 
+         disallowed_instr.extend(exclude_instr)
+ 
+-        # TODO Randomization logic needs to be frame with PyVSC library
+-        if len(disallowed_instr) == 0:
+-            try:
+-                if len(include_instr) > 0:
+-                    if len(include_instr) == 1:
+-                        idx = 0
+-                    else:
+-                        idx = random.randrange(0, len(include_instr) - 1)
+-                    name = include_instr[idx]
+-                elif len(allowed_instr) > 0:
+-                    idx = random.randrange(0, len(allowed_instr) - 1)
+-                    name = allowed_instr[idx]
+-                else:
+-                    idx = random.randrange(0, len(cls.instr_names) - 1)
+-                    name = cls.instr_names[idx]
+-            except Exception:
+-                logging.critical("[%s] Cannot generate random instruction", riscv_instr.__name__)
+-                sys.exit(1)
++        # Fix: pick from include_instr, else the allowed categories/groups, else every
++        # instruction, and always drop the excluded ones. The old code ignored the
++        # exclusions whenever there were any, and randrange(0, len - 1) never picked the
++        # last entry of a list.
++        if len(include_instr) > 0:
++            candidates = list(include_instr)
++        elif len(allowed_instr) > 0:
++            candidates = list(allowed_instr)
+         else:
+-            try:
+-                name = random.choice(cls.instr_names)
+-                if len(include_instr) > 0:
+-                    name = random.choice(include_instr)
+-                if len(allowed_instr) > 0:
+-                    name = random.choice(allowed_instr)
+-            except Exception:
+-                logging.critical("[%s] Cannot generate random instruction", riscv_instr.__name__)
+-                sys.exit(1)
++            candidates = list(cls.instr_names)
++        if disallowed_instr:
++            # names may be given as enums or as strings: compare by name
++            nm = lambda x: x.name if hasattr(x, "name") else str(x)
++            bad = {nm(x) for x in disallowed_instr}
++            candidates = [c for c in candidates if nm(c) not in bad]
++        if not candidates:
++            logging.critical("[%s] Cannot generate random instruction", riscv_instr.__name__)
++            sys.exit(1)
++        name = random.choice(candidates)
+         # rs1 rs2 values are overwriting and the last generated values are
+         # getting assigned for a particular instruction hence creating different
+         # object address and id to ratain the randomly generated values.
+@@ -283,9 +274,10 @@ class riscv_instr:
+         if len(load_store_instr) == 0:
+             load_store_instr = cls.instr_category["LOAD"] + \
+                 cls.instr_category["STORE"]
+-        cls.idx = random.randrange(0, len(load_store_instr) - 1)
+-        name = load_store_instr[cls.idx]
+-        instr_h = copy.copy(cls.instr_template[name])
++        name = random.choice(load_store_instr)   # Fix: randrange(0, len - 1) never chose the last one
++        # Fix: deepcopy, as get_rand_instr does. A shallow copy shares the template's
++        # randomized fields, so every LW (say) ended up with the rs1 of the last one.
++        instr_h = copy.deepcopy(cls.instr_template[name])
+         return instr_h
+ 
+     @classmethod
+@@ -293,7 +285,7 @@ class riscv_instr:
+         if not cls.instr_template.get(name):
+             logging.critical("Cannot get instr %s", name)
+             sys.exit(1)
+-        instr_h = copy.copy(cls.instr_template[name])
++        instr_h = copy.deepcopy(cls.instr_template[name])   # Fix: see get_load_store_instr
+         return instr_h
+ 
+     def set_rand_mode(self):
+diff --git a/pygen/pygen_src/riscv_asm_program_gen.py b/pygen/pygen_src/riscv_asm_program_gen.py
+index aac39ca..94e3006 100644
+--- a/pygen/pygen_src/riscv_asm_program_gen.py
++++ b/pygen/pygen_src/riscv_asm_program_gen.py
+@@ -818,6 +818,11 @@ class riscv_asm_program_gen:
+                                                         hex(exception_cause_t.ECALL_MMODE)),
+                       "beq x{}, x{}, {}ecall_handler".format(
+                       cfg.gpr[0], cfg.gpr[1], pkg_ins.hart_prefix(hart)),
++                      # Breakpoint (Fix: missing in PyFlow; ported from the SV version)
++                      "li x{}, {} # BREAKPOINT".format(cfg.gpr[1],
++                                                       hex(exception_cause_t.BREAKPOINT)),
++                      "beq x{}, x{}, {}ebreak_handler".format(
++                      cfg.gpr[0], cfg.gpr[1], pkg_ins.hart_prefix(hart)),
+                       # Illegal instruction exception
+                       "li x{}, {} # ILLEGAL_INSTRUCTION".format(
+                       cfg.gpr[1], hex(exception_cause_t.ILLEGAL_INSTRUCTION)),
+@@ -890,8 +895,19 @@ class riscv_asm_program_gen:
+     # TODO: Support ebreak exception delegation
+     # TODO: handshake the correct Xcause CSR based on delegation privil. mode
+     def gen_ebreak_handler(self, hart):
+-        # TODO
+-        pass
++        # Fix: this was an empty TODO, so every EBREAK ended the test. Ported from the SV
++        # version: skip the EBREAK (mepc + 4) and return.
++        instr = []
++        self.gen_signature_handshake(instr, signature_type_t.CORE_STATUS,
++                                     core_status_t.EBREAK_EXCEPTION)
++        self.gen_signature_handshake(instr, signature_type_t.WRITE_CSR, privileged_reg_t.MCAUSE)
++        instr.extend(("csrr  x{}, {}".format(cfg.gpr[0], hex(privileged_reg_t.MEPC)),
++                      "addi  x{}, x{}, 4".format(cfg.gpr[0], cfg.gpr[0]),
++                      "csrw  {}, x{}".format(hex(privileged_reg_t.MEPC), cfg.gpr[0])))
++        pkg_ins.pop_gpr_from_kernel_stack(privileged_reg_t.MSTATUS, privileged_reg_t.MSCRATCH,
++                                          cfg.mstatus_mprv, cfg.sp, cfg.tp, instr)
++        instr.append("mret")
++        self.gen_section(pkg_ins.get_label("ebreak_handler", hart), instr)
+ 
+     # Illegal instruction handler
+     # Note: Save the illegal instruction to MTVAL is optional in the spec, and mepc could be
+diff --git a/pygen/pygen_src/riscv_illegal_instr.py b/pygen/pygen_src/riscv_illegal_instr.py
+index 4be43bc..2010110 100644
+--- a/pygen/pygen_src/riscv_illegal_instr.py
++++ b/pygen/pygen_src/riscv_illegal_instr.py
+@@ -129,9 +129,10 @@ class riscv_illegal_instr:
+                 self.instr_bin[31:20].not_inside(vsc.rangelist(self.csrs))
+                 # self.instr_bin[20:31].not_inside(vsc.rangelist(self.custom_csr))
+ 
++    # Fix (this whole class): Python `and` / `or` / `not` replaced by pyvsc `&` / `|` / `== 0`.
+     @vsc.constraint
+     def legal_rv32_c_slli(self):
+-        with vsc.if_then((self.c_msb == 0) and (self.c_op == 2) and (self.xlen == 32)):
++        with vsc.if_then((self.c_msb == 0) & (self.c_op == 2) & (self.xlen == 32)):
+             with vsc.if_then(self.exception == illegal_instr_type_e.kReservedCompressedInstr):
+                 self.instr_bin[12] == 1
+             with vsc.else_then():
+@@ -193,53 +194,53 @@ class riscv_illegal_instr:
+             with vsc.if_then(self.reserved_c == reserved_c_instr_e.kIllegalCompressed):
+                 self.instr_bin[15:0] == 0
+             with vsc.if_then(self.reserved_c == reserved_c_instr_e.kReservedAddispn):
+-                ((self.instr_bin[15:0] == 0) and (self.c_op == 0))
++                ((self.instr_bin[15:0] == 0) & (self.c_op == 0))
+             with vsc.if_then(self.reserved_c == reserved_c_instr_e.kReservedAddiw):
+-                ((self.c_msb == 1) and (self.c_op == 1) and
++                ((self.c_msb == 1) & (self.c_op == 1) &
+                  (self.instr_bin[11:7] == 0))
+             with vsc.if_then(self.reserved_c == reserved_c_instr_e.kReservedC0):
+-                ((self.instr_bin[15:10] == 39) and
+-                 (self.instr_bin[6:5] == 2) and (self.c_op == 1))
++                ((self.instr_bin[15:10] == 39) &
++                 (self.instr_bin[6:5] == 2) & (self.c_op == 1))
+             with vsc.if_then(self.reserved_c == reserved_c_instr_e.kReservedC1):
+-                ((self.instr_bin[15:10] == 39) and
+-                 (self.instr_bin[6:5] == 3) and (self.c_op == 1))
++                ((self.instr_bin[15:10] == 39) &
++                 (self.instr_bin[6:5] == 3) & (self.c_op == 1))
+             with vsc.if_then(self.reserved_c == reserved_c_instr_e.kReservedC2):
+-                ((self.c_msb == 4) and (self.c_op == 0))
++                ((self.c_msb == 4) & (self.c_op == 0))
+             with vsc.if_then(self.reserved_c == reserved_c_instr_e.kReservedAddi16sp):
+-                ((self.c_msb == 3) and (self.c_op == 1) and
+-                 (self.instr_bin[11:7] == 2) and
+-                 (not self.instr_bin[12]) and (self.instr_bin[6:2] == 0))
++                ((self.c_msb == 3) & (self.c_op == 1) &
++                 (self.instr_bin[11:7] == 2) &
++                 (self.instr_bin[12] == 0) & (self.instr_bin[6:2] == 0))
+             with vsc.if_then(self.reserved_c == reserved_c_instr_e.kReservedLui):
+-                ((self.c_msb == 3) and (self.c_op == 1) and
+-                 (not self.instr_bin[12]) and (self.instr_bin[6:2] == 0))
++                ((self.c_msb == 3) & (self.c_op == 1) &
++                 (self.instr_bin[12] == 0) & (self.instr_bin[6:2] == 0))
+             with vsc.if_then(self.reserved_c == reserved_c_instr_e.kReservedJr):
+                 self.instr_bin == 32770
+             with vsc.if_then(self.reserved_c == reserved_c_instr_e.kReservedLqsp):
+-                ((self.c_msb == 1) and (self.c_op == 2) and
++                ((self.c_msb == 1) & (self.c_op == 2) &
+                  (self.instr_bin[11:7] == 0))
+             with vsc.if_then(self.reserved_c == reserved_c_instr_e.kReservedLwsp):
+-                ((self.c_msb == 2) and (self.c_op == 2) and
++                ((self.c_msb == 2) & (self.c_op == 2) &
+                  (self.instr_bin[11:7] == 0))
+             with vsc.if_then(self.reserved_c == reserved_c_instr_e.kReservedLdsp):
+-                ((self.c_msb == 3) and (self.c_op == 2) and (self.instr_bin[11:7] == 0))
++                ((self.c_msb == 3) & (self.c_op == 2) & (self.instr_bin[11:7] == 0))
+ 
+     @vsc.constraint
+     def hint_instr_c(self):
+         with vsc.if_then(self.exception == illegal_instr_type_e.kHintInstr):
+-            ((self.c_msb == 0) and (self.c_op == 1) and (self.instr_bin[12] +
+-                                                         self.instr_bin[6:2] == 0)) or \
+-                ((self.c_msb == 2) and (self.c_op == 1) and (self.instr_bin[11:7] == 0)) or \
+-                ((self.c_msb == 4) and (self.c_op == 1) and (self.instr_bin[12:11] == 0) and
+-                 (self.instr_bin[6:2] == 0)) or \
+-                ((self.c_msb == 4) and (self.c_op == 2) and (self.instr_bin[11:7] == 0) and
+-                 (self.instr_bin[6:2] != 0)) or \
+-                ((self.c_msb == 3) and (self.c_op == 1) and (self.instr_bin[11:7] == 0) and
+-                 (self.instr_bin[12] + self.instr_bin[6:2]) != 0) or \
+-                ((self.c_msb == 0) and (self.c_op == 2) and (self.instr_bin[11:7] == 0)) or \
+-                ((self.c_msb == 0) and (self.c_op == 2) and (self.instr_bin[11:7] != 0) and
+-                 not(self.instr_bin[12]) and (self.instr_bin[6:2] == 0)) or \
+-                ((self.c_msb == 4) and (self.c_op == 2) and (self.instr_bin[11:7] == 0) and
+-                 self.instr_bin[12] and (self.instr_bin[6:2] != 0))
++            ((self.c_msb == 0) & (self.c_op == 1) & (self.instr_bin[12] +
++                                                         self.instr_bin[6:2] == 0)) | \
++                ((self.c_msb == 2) & (self.c_op == 1) & (self.instr_bin[11:7] == 0)) | \
++                ((self.c_msb == 4) & (self.c_op == 1) & (self.instr_bin[12:11] == 0) &
++                 (self.instr_bin[6:2] == 0)) | \
++                ((self.c_msb == 4) & (self.c_op == 2) & (self.instr_bin[11:7] == 0) &
++                 (self.instr_bin[6:2] != 0)) | \
++                ((self.c_msb == 3) & (self.c_op == 1) & (self.instr_bin[11:7] == 0) &
++                 (self.instr_bin[12] + self.instr_bin[6:2]) != 0) | \
++                ((self.c_msb == 0) & (self.c_op == 2) & (self.instr_bin[11:7] == 0)) | \
++                ((self.c_msb == 0) & (self.c_op == 2) & (self.instr_bin[11:7] != 0) &
++                 (self.instr_bin[12] == 0) & (self.instr_bin[6:2] == 0)) | \
++                ((self.c_msb == 4) & (self.c_op == 2) & (self.instr_bin[11:7] == 0) &
++                 (self.instr_bin[12] == 1) & (self.instr_bin[6:2] != 0))
+ 
+     @vsc.constraint
+     def illegal_opcode_c(self):
+@@ -311,8 +312,10 @@ class riscv_illegal_instr:
+     @vsc.constraint
+     def has_func7_c(self):
+         vsc.solve_order(self.opcode, self.func7)
+-        with vsc.if_then((self.opcode == 19) and (self.func3 == 1 or self.func3 == 5) or
+-                         (self.opcode == 51 or self.opcode == 59)):
++        # Fix: Python and/or do not combine pyvsc expressions (they just return one
++        # operand); use & and | with every comparison in parentheses.
++        with vsc.if_then(((self.opcode == 19) & ((self.func3 == 1) | (self.func3 == 5))) |
++                         (self.opcode == 51) | (self.opcode == 59)):
+             self.has_func7 == 1
+         with vsc.else_then():
+             self.has_func7 == 0
+@@ -320,7 +323,7 @@ class riscv_illegal_instr:
+     @vsc.constraint
+     def has_func3_c(self):
+         vsc.solve_order(self.opcode, self.func7)
+-        with vsc.if_then(self.opcode == 55 or self.opcode == 111 or self.opcode == 23):
++        with vsc.if_then((self.opcode == 55) | (self.opcode == 111) | (self.opcode == 23)):
+             self.has_func3 == 0
+         with vsc.else_then():
+             self.has_func3 == 1
+diff --git a/pygen/pygen_src/riscv_instr_sequence.py b/pygen/pygen_src/riscv_instr_sequence.py
+index ffe7d2c..170bafc 100644
+--- a/pygen/pygen_src/riscv_instr_sequence.py
++++ b/pygen/pygen_src/riscv_instr_sequence.py
+@@ -270,7 +270,7 @@ class riscv_instr_sequence:
+             jump_instr.append(riscv_instr_name_t.C_JR)
+             if not (riscv_reg_t.RA in cfg.reserved_regs):
+                 jump_instr.append(riscv_instr_name_t.C_JALR)
+-        i = random.randrange(0, len(jump_instr) - 1)
++        i = random.randrange(0, len(jump_instr))   # Fix: was len - 1 (empty range without C)
+         if jump_instr[i] == riscv_instr_name_t.C_JALR:
+             routine_str = prefix + "c.jalr x{}".format(ra.get_val())
+         elif jump_instr[i] == riscv_instr_name_t.C_JR:
+@@ -290,9 +290,20 @@ class riscv_instr_sequence:
+         if bin_instr_cnt >= 0:
+             logging.info("Injecting {} illegal instructions, ratio {}/100".
+                          format(bin_instr_cnt, cfg.illegal_instr_ratio))
++            no_c = not any(g.name.endswith("C") for g in rcs.supported_isa)
+             for _ in range(bin_instr_cnt):
+-                with vsc.randomize_with(self.illegal_instr):
+-                    self.illegal_instr.exception != illegal_instr_type_e.kHintInstr
++                # Fix: without C in the ISA, force 32-bit encodings (the class never did, so
++                # the solver could fail), and retry if pyvsc still reports a solve failure.
++                for attempt in range(20):
++                    try:
++                        with vsc.randomize_with(self.illegal_instr):
++                            self.illegal_instr.exception != illegal_instr_type_e.kHintInstr
++                            if no_c:
++                                self.illegal_instr.compressed == 0
++                        break
++                    except Exception:
++                        if attempt == 19:
++                            raise
+                 insert_str = "{}.4byte {} # {}".format(pkg_ins.indent,
+                                                        self.illegal_instr.get_bin_str(),
+                                                        self.illegal_instr.comment)
+diff --git a/pygen/pygen_src/riscv_instr_stream.py b/pygen/pygen_src/riscv_instr_stream.py
+index ac2fbdb..feee872 100644
+--- a/pygen/pygen_src/riscv_instr_stream.py
++++ b/pygen/pygen_src/riscv_instr_stream.py
+@@ -128,9 +128,13 @@ class riscv_instr_stream:
+         if len(insert_instr_position) > 0:
+             insert_instr_position.sort()
+         if contained:
++            # Fix: the last one goes at the very end. With current_instr_cnt - 1 here and
++            # randint(0, current_instr_cnt) above (inclusive, unlike the SV version), the
++            # next-to-last instruction could land after the last one: a loop's counter
++            # update then came after its branch and the loop never ended.
+             insert_instr_position[0] = 0
+             if new_instr_cnt > 1:
+-                insert_instr_position[new_instr_cnt - 1] = current_instr_cnt - 1
++                insert_instr_position[new_instr_cnt - 1] = current_instr_cnt
+         for i in range(len(new_instr)):
+             self.insert_instr(new_instr[i], insert_instr_position[i] + i)
+ 
+@@ -164,7 +168,9 @@ class riscv_rand_instr_stream(riscv_instr_stream):
+             self.instr_list.append(None)
+ 
+     def setup_allowed_instr(self, no_branch = 0, no_load_store = 1):
+-        self.allowed_instr = riscv_instr.basic_instr
++        # Fix: copy. Without it the extend() calls below grew the shared class list, so
++        # after one stream allowed loads/stores, every "no load/store" stream got them too.
++        self.allowed_instr = list(riscv_instr.basic_instr)
+         if no_branch == 0:
+             self.allowed_instr.extend(
+                 riscv_instr.instr_category[riscv_instr_category_t.BRANCH.name])
+diff --git a/pygen/pygen_src/riscv_load_store_instr_lib.py b/pygen/pygen_src/riscv_load_store_instr_lib.py
+index bf0160e..3241f0c 100644
+--- a/pygen/pygen_src/riscv_load_store_instr_lib.py
++++ b/pygen/pygen_src/riscv_load_store_instr_lib.py
+@@ -82,33 +82,49 @@ class riscv_load_store_base_instr_stream(riscv_mem_access_stream):
+         self.offset = [0] * self.num_load_store
+         self.addr = [0] * self.num_load_store
+         for i in range(self.num_load_store):
+-            try:
+-                if self.locality == locality_e.NARROW:
+-                    offset_ = random.randrange(-16, 16)
+-                elif self.locality == locality_e.HIGH:
+-                    offset_ = random.randrange(-64, 64)
+-                elif self.locality == locality_e.MEDIUM:
+-                    offset_ = random.randrange(-256, 256)
+-                elif self.locality == locality_e.SPARSE:
+-                    offset_ = random.randrange(-2048, 2047)
+-                var1 = self.base + offset_ - 1
+-                var2 = self.base + offset_ + 1
+-                addr_ = random.randrange(var1, var2)
+-            except Exception:
+-                logging.critical("Cannot randomize load/store offset")
+-                sys.exit(1)
+-            self.offset[i] = offset_
+-            self.addr[i] = addr_
++            self.offset[i], self.addr[i] = self.legal_offset()
+ 
+     def pre_randomize(self):
+         super().pre_randomize()
+-        if(riscv_reg_t.SP in [cfg.reserved_regs, self.reserved_rd]):
++        # Fix: `SP in [list, list]` was always False
++        if (riscv_reg_t.SP in cfg.reserved_regs) or (riscv_reg_t.SP in self.reserved_rd):
+             self.use_sp_as_rs1 = 0
+             with vsc.raw_mode():
+                 self.use_sp_as_rs1.rand_mode = False
+             self.sp_rnd_order_c.constraint_mode(False)
+ 
++    def legalize_rs1(self):
++        # Fix: the constraint that keeps x0 and reserved registers out of the base register
++        # is commented out above (pyvsc error), so the stream could emit `la zero, ...`,
++        # which does not assemble, or overwrite a reserved register. Pick a legal one here.
++        bad = [riscv_reg_t.ZERO] + list(cfg.reserved_regs) + list(self.reserved_rd)
++        if self.rs1_reg == riscv_reg_t.SP and not self.use_sp_as_rs1:
++            bad.append(riscv_reg_t.SP)
++        if self.rs1_reg in bad:
++            choices = [r for r in riscv_reg_t if r.value < 32 and r not in bad and r != riscv_reg_t.SP]
++            self.rs1_reg = random.choice(choices)
++
++    def pick_offset(self):
++        if self.locality == locality_e.NARROW:
++            return random.randrange(-16, 16)
++        if self.locality == locality_e.HIGH:
++            return random.randrange(-64, 64)
++        if self.locality == locality_e.MEDIUM:
++            return random.randrange(-256, 256)
++        return random.randrange(-2048, 2047)
++
++    def legal_offset(self):
++        # Fix: the address the instruction uses is base + offset, and it must stay inside
++        # the data page (the SV version constrains addr to [0, page size - 1]). The old code
++        # used base + offset - 1 for the alignment check and never checked the range.
++        for _ in range(1000):
++            offset_ = self.pick_offset()
++            if 0 <= self.base + offset_ < self.max_load_store_offset:
++                return offset_, self.base + offset_
++        return 0, self.base
++
+     def post_randomize(self):
++        self.legalize_rs1()
+         self.randomize_offset()
+         # rs1 cannot be modified by other instructions
+         if not(self.rs1_reg in self.reserved_rd):
+@@ -128,6 +144,8 @@ class riscv_load_store_base_instr_stream(riscv_mem_access_stream):
+                               riscv_reg_t.SP]) and not(cfg.disable_compressed_instr)):
+             enable_compressed_load_store = 1
+         for i in range(len(self.addr)):
++            allowed_instr = []   # Fix: was never cleared, so an LW allowed for one aligned
++                                 # address stayed allowed for every later (unaligned) one
+             # Assign the allowed load/store instructions based on address alignment
+             # This is done separately rather than a constraint to improve the randomization
+             # performance
+@@ -177,32 +195,33 @@ class riscv_load_store_base_instr_stream(riscv_mem_access_stream):
+                                     (riscv_instr_group_t.RV32DC in rcs.supported_isa)):
+                                 allowed_instr.extend(
+                                     [riscv_instr_name_t.C_FLD, riscv_instr_name_t.C_FSD])
+-                else:  # unalligned load/store
+-                    allowed_instr.extend([riscv_instr_name_t.LW, riscv_instr_name_t.SW,
+-                                          riscv_instr_name_t.LH, riscv_instr_name_t.LHU,
+-                                          riscv_instr_name_t.SH])
+-                    # Compressed load/store still needs to be alligned
+-                    if (self.offset[i] in range(128) and (self.offset[i] % 4 == 0) and
+-                        (riscv_instr_group_t.RV32C in rcs.supported_isa) and
++            else:  # unaligned load/store allowed (Fix: this else belonged to the XLEN >= 64 if,
++                   # so on RV32 the unaligned instructions were added for every address)
++                allowed_instr.extend([riscv_instr_name_t.LW, riscv_instr_name_t.SW,
++                                      riscv_instr_name_t.LH, riscv_instr_name_t.LHU,
++                                      riscv_instr_name_t.SH])
++                # Compressed load/store still needs to be alligned
++                if (self.offset[i] in range(128) and (self.offset[i] % 4 == 0) and
++                    (riscv_instr_group_t.RV32C in rcs.supported_isa) and
++                        enable_compressed_load_store):
++                    if self.rs1_reg == riscv_reg_t.SP:
++                        allowed_instr.extend(
++                            [riscv_instr_name_t.C_LWSP, riscv_instr_name_t.C_SWSP])
++                    else:
++                        allowed_instr.extend(
++                            [riscv_instr_name_t.C_LW, riscv_instr_name_t.C_SW])
++                if rcs.XLEN >= 64:
++                    allowed_instr.extend(
++                        [riscv_instr_name_t.LWU, riscv_instr_name_t.LD, riscv_instr_name_t.SD])
++                    if (self.offset[i] in range(256) and (self.offset[i] % 8 == 0) and
++                        (riscv_instr_group_t.RV64C in rcs.supported_isa) and
+                             enable_compressed_load_store):
+                         if self.rs1_reg == riscv_reg_t.SP:
+                             allowed_instr.extend(
+                                 [riscv_instr_name_t.C_LWSP, riscv_instr_name_t.C_SWSP])
+                         else:
+                             allowed_instr.extend(
+-                                [riscv_instr_name_t.C_LW, riscv_instr_name_t.C_SW])
+-                    if rcs.XLEN >= 64:
+-                        allowed_instr.extend(
+-                            [riscv_instr_name_t.LWU, riscv_instr_name_t.LD, riscv_instr_name_t.SD])
+-                        if (self.offset[i] in range(256) and (self.offset[i] % 8 == 0) and
+-                            (riscv_instr_group_t.RV64C in rcs.supported_isa) and
+-                                enable_compressed_load_store):
+-                            if self.rs1_reg == riscv_reg_t.SP:
+-                                allowed_instr.extend(
+-                                    [riscv_instr_name_t.C_LWSP, riscv_instr_name_t.C_SWSP])
+-                            else:
+-                                allowed_instr.extend(
+-                                    [riscv_instr_name_t.C_LD, riscv_instr_name_t.C_SD])
++                                [riscv_instr_name_t.C_LD, riscv_instr_name_t.C_SD])
+             instr = riscv_instr.get_load_store_instr(allowed_instr)
+             instr.has_rs1 = 0
+             instr.has_imm = 0
+@@ -291,20 +310,84 @@ class riscv_load_store_hazard_instr_stream(riscv_load_store_base_instr_stream):
+                 self.offset[i] = self.offset[i - 1]
+                 self.addr[i] = self.addr[i - 1]
+             else:
+-                try:
+-                    if self.locality == locality_e.NARROW:
+-                        offset_ = random.randrange(-16, 16)
+-                    elif self.locality == locality_e.HIGH:
+-                        offset_ = random.randrange(-64, 64)
+-                    elif self.locality == locality_e.MEDIUM:
+-                        offset_ = random.randrange(-256, 256)
+-                    elif self.locality == locality_e.SPARSE:
+-                        offset_ = random.randrange(-2048, 2047)
+-                    var1 = self.base + offset_ - 1
+-                    var2 = self.base + offset_ + 1
+-                    addr_ = random.randrange(var1, var2)
+-                except Exception:
+-                    logging.critical("Cannot randomize load/store offset")
+-                    sys.exit(1)
+-                self.offset[i] = offset_
+-                self.addr[i] = addr_
++                self.offset[i], self.addr[i] = self.legal_offset()
++
++
++# ----------------------------------------------------------------------------------------
++# Fix: the three streams below exist in the SV generator but were never ported to PyFlow
++# (factory(): "Cannot Create object of ..."). Ported here.
++# ----------------------------------------------------------------------------------------
++
++def _legal_gprs(exclude):
++    bad = set([riscv_reg_t.ZERO, riscv_reg_t.SP] + list(cfg.reserved_regs) + list(exclude))
++    return [r for r in riscv_reg_t if r.value < 32 and r not in bad]
++
++
++# Use a small set of GPRs to create RAW, WAW and WAR hazards
++@vsc.randobj
++class riscv_hazard_instr_stream(riscv_load_store_base_instr_stream):
++    def __init__(self):
++        super().__init__()
++        self.num_of_avail_regs = 6
++
++    @vsc.constraint
++    def legal_c(self):
++        self.num_load_store.inside(vsc.rangelist(vsc.rng(10, 30)))
++        self.num_mixed_instr.inside(vsc.rangelist(vsc.rng(10, 30)))
++
++    def randomize_avail_regs(self):
++        # every load/store and mixed instruction of this stream uses only these registers
++        regs = random.sample(_legal_gprs(list(self.reserved_rd) + [self.rs1_reg]),
++                             self.num_of_avail_regs)
++        self.avail_regs.clear()
++        for r in regs:
++            self.avail_regs.append(r)
++
++
++# Load/store streams to several data pages, mixed together
++@vsc.randobj
++class riscv_multi_page_load_store_instr_stream(riscv_mem_access_stream):
++    def __init__(self):
++        super().__init__()
++        self.sub_streams = []
++
++    def pick_pages(self, n):
++        return random.sample(range(self.max_data_page_id), n)
++
++    def num_streams(self):
++        return random.randint(2, min(8, self.max_data_page_id))
++
++    def post_randomize(self):
++        n = self.num_streams()
++        pages = self.pick_pages(n)
++        rs1 = random.sample(_legal_gprs(self.reserved_rd), n)
++        self.instr_list = []
++        for i in range(n):
++            st = riscv_load_store_stress_instr_stream()
++            st.min_instr_cnt = 5
++            st.max_instr_cnt = 10
++            st.hart = self.hart
++            st.kernel_mode = self.kernel_mode
++            st.label = "{}_{}".format(self.label, i)
++            st.sp_c.constraint_mode(False)
++            # do not overwrite the base register of the other sub-streams
++            st.reserved_rd.extend([r for j, r in enumerate(rs1) if j != i])
++            with vsc.randomize_with(st):
++                st.rs1_reg == rs1[i]
++                st.data_page_id == pages[i]
++                st.use_sp_as_rs1 == 0
++            if i == 0:
++                self.instr_list = st.instr_list
++            else:
++                self.mix_instr_stream(st.instr_list)
++        super().post_randomize()
++
++
++# Several streams with different base registers into the same data page
++@vsc.randobj
++class riscv_mem_region_stress_test(riscv_multi_page_load_store_instr_stream):
++    def num_streams(self):
++        return random.randint(2, 5)
++
++    def pick_pages(self, n):
++        return [random.randrange(self.max_data_page_id)] * n
+diff --git a/pygen/pygen_src/riscv_loop_instr.py b/pygen/pygen_src/riscv_loop_instr.py
+index 708c742..5f47da7 100644
+--- a/pygen/pygen_src/riscv_loop_instr.py
++++ b/pygen/pygen_src/riscv_loop_instr.py
+@@ -13,6 +13,7 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ """
+ 
+ import vsc
++import random
+ import sys
+ import logging
+ from pygen_src.riscv_instr_gen_config import cfg
+@@ -133,113 +134,90 @@ class riscv_loop_instr(riscv_rand_instr_stream):
+             with vsc.else_then:
+                 self.loop_step_val[i] < 0
+ 
++    # Fix: the PyFlow port of this stream was unfinished. The init/update instructions were
++    # any random instruction (constrained afterwards, which usually failed: "Cannot
++    # randomize loop init2 instruction"), the branch never compared against the limit
++    # register, and the build step appended the wrong list entry. This version builds the
++    # same structure as the SV generator, with values chosen per branch type so every loop
++    # ends after a few iterations:
++    #     ADDI cnt, x0, init ; ADDI limit, x0, limit
++    #   target: <random ALU instruction> ... <random instructions>
++    #     ADDI cnt, cnt, step ; Bxx cnt, limit, target
++    def pick_loop_values(self, br):
++        n = random.randint(1, 8)                       # iterations
++        if br == riscv_instr_name_t.BNE:
++            init, step = random.randint(-10, 10), random.choice([s for s in range(-5, 6) if s])
++            return init, init + n * step, step
++        if br == riscv_instr_name_t.BEQ:               # branches back once: 2 iterations
++            init, step = random.randint(-10, 10), random.choice([s for s in range(-5, 6) if s])
++            return init, init + step, step
++        if br == riscv_instr_name_t.BLT:
++            init, step = random.randint(-10, 10), random.randint(1, 5)
++            return init, init + random.randint(1, n * step), step
++        if br == riscv_instr_name_t.BGE:
++            init, step = random.randint(-10, 10), random.randint(-5, -1)
++            return init, init - random.randint(0, n * -step), step
++        if br == riscv_instr_name_t.BLTU:
++            init, step = random.randint(0, 10), random.randint(1, 5)
++            return init, init + random.randint(1, n * step), step
++        # BGEU: count down, never below 0 (that would wrap to a huge unsigned value)
++        step = random.randint(-5, -1)
++        limit = random.randint(-step + 1, 10)
++        init = limit + random.randint(0, n * -step)
++        return init, limit, step
++
++    def make_addi(self, rd, rs1, imm, comment):
++        instr = riscv_instr.get_instr(riscv_instr_name_t.ADDI)
++        instr.rd = rd
++        instr.rs1 = rs1
++        instr.imm_str = str(imm)
++        instr.comment = pkg_ins.format_string(comment)
++        return instr
++
+     def post_randomize(self):
+-        for i in range(len(self.loop_cnt_reg)):
+-            self.reserved_rd.append(self.loop_cnt_reg[i])
+-        for i in range(len(self.loop_limit_reg)):
+-            self.reserved_rd.append(self.loop_limit_reg[i])
+-        # Generate instructions that mixed with the loop instructions
+-        self.initialize_instr_list(self.num_of_instr_in_loop)
++        nested = random.randint(1, 2)
++        bad = [riscv_reg_t.ZERO] + list(cfg.reserved_regs) + list(self.reserved_rd)
++        free = [r for r in riscv_reg_t if r.value < 32 and r not in bad]
++        regs = random.sample(free, 2 * nested)
++        cnt_regs, limit_regs = regs[:nested], regs[nested:]
++        self.reserved_rd.extend(regs)
++        # Random instructions mixed into the loop body (no branches)
++        self.initialize_instr_list(random.randint(1, 25))
+         self.gen_instr(1)
+-        # Randomize the key loop instructions
+-        self.loop_init_instr = [0] * 2 * self.num_of_nested_loop
+-        self.loop_update_instr = [0] * self.num_of_nested_loop
+-        self.loop_branch_instr = [0] * self.num_of_nested_loop
+-        self.loop_branch_target_instr = [0] * self.num_of_nested_loop
+-        for i in range(self.num_of_nested_loop):
+-            # Instruction to init the loop counter
+-            try:
+-                self.loop_init_instr.insert(2 * i, riscv_instr.get_rand_instr())
+-                # TODO
+-                '''self.loop_update_instr[i] = riscv_instr.get_rand_instr(
+-                include_instr = [riscv_instr_name_t.ADDI])'''
+-                # Removed include_instr ADDI for now to avoid unrecognized colon
+-                with self.loop_init_instr[2 * i].randomize_with():
+-                    self.loop_init_instr[2 * i].rd == self.loop_cnt_reg[i]
+-                    self.loop_init_instr[2 * i].rs1 == riscv_reg_t.ZERO
+-                    self.loop_init_instr[2 * i].imm == self.loop_init_val[i]
+-                    self.loop_init_instr[2 * i].comment = \
+-                        pkg_ins.format_string("init loop {} counter".format(i))
+-            except Exception:
+-                logging.critical("Cannot randomize loop init1 instruction")
+-                sys.exit(1)
+-            # Instruction to init loop limit
+-            try:
+-                self.loop_init_instr[2 * i + 1] = riscv_instr.get_rand_instr()
+-                # TODO
+-                '''self.loop_update_instr[i] = riscv_instr.get_rand_instr(
+-                include_instr = [riscv_instr_name_t.ADDI])'''
+-                # Removed include_instr ADDI for now to avoid unrecognized colon
+-                with self.loop_init_instr[2 * i + 1].randomize_with():
+-                    self.loop_init_instr[2 * i + 1].rd == self.loop_limit_reg[i]
+-                    self.loop_init_instr[2 * i + 1].rs1 == riscv_reg_t.ZERO
+-                    self.loop_init_instr[2 * i + 1].imm == self.loop_limit_val[i]
+-                    self.loop_init_instr[2 * i + 1].comment = \
+-                        pkg_ins.format_string("init loop {} limit".format(i))
+-            except Exception:
+-                logging.critical("Cannot randomize loop init2 instruction")
+-                sys.exit(1)
+-            # Branch target instruction, can be anything
+-            self.loop_branch_target_instr[i] = riscv_instr.get_rand_instr(
++        branch_types = [riscv_instr_name_t.BEQ, riscv_instr_name_t.BNE, riscv_instr_name_t.BLT,
++                        riscv_instr_name_t.BGE, riscv_instr_name_t.BLTU, riscv_instr_name_t.BGEU]
++        self.loop_instr = []
++        for i in range(nested):                        # innermost first, then wrap it
++            br = random.choice(branch_types)
++            init, limit, step = self.pick_loop_values(br)
++            init_cnt = self.make_addi(cnt_regs[i], riscv_reg_t.ZERO, init,
++                                      "init loop {} counter".format(i))
++            init_lim = self.make_addi(limit_regs[i], riscv_reg_t.ZERO, limit,
++                                      "init loop {} limit".format(i))
++            target = riscv_instr.get_rand_instr(
+                 include_category = [riscv_instr_category_t.ARITHMETIC.name,
+                                     riscv_instr_category_t.LOGICAL.name,
+                                     riscv_instr_category_t.COMPARE.name],
+                 exclude_instr = [riscv_instr_name_t.C_ADDI16SP])
+-            try:
+-                with self.loop_branch_target_instr[i].randomize_with():
+-                    with vsc.if_then(self.loop_branch_target_instr[i].format ==
+-                                     riscv_instr_format_t.CB_FORMAT):
+-                        self.loop_branch_target_instr[i].rs1.not_inside(
+-                            vsc.rangelist(self.reserved_rd))
+-                        self.loop_branch_target_instr[i].rs1.not_inside(
+-                            vsc.rangelist(cfg.reserved_regs))
+-                    with vsc.if_then(self.loop_branch_target_instr[i].has_rd == 1):
+-                        self.loop_branch_target_instr[i].rd.not_inside(
+-                            vsc.rangelist(self.reserved_rd))
+-                        self.loop_branch_target_instr[i].rd.not_inside(
+-                            vsc.rangelist(cfg.reserved_regs))
+-            except Exception:
+-                logging.critical("Cannot randomize branch target instruction")
+-                sys.exit(1)
+-            self.loop_branch_target_instr[i].label = pkg_ins.format_string(
+-                "{}_{}_t".format(self.label, i))
+-            # Instruction to update loop counter
+-            self.loop_update_instr[i] = riscv_instr.get_rand_instr()
+-            # TODO
+-            '''self.loop_update_instr[i] = riscv_instr.get_rand_instr(
+-                include_instr = [riscv_instr_name_t.ADDI])'''
+-            # Removing include_instr ADDI for now to avoid unrecognized colon
+-            # Commenting for now due to key error
+-            '''with self.loop_update_instr[i].randomize_with():
+-                self.loop_update_instr[i].rd == self.loop_cnt_reg[i]
+-                self.loop_update_instr[i].rs1 == self.loop_cnt_reg[i]
+-                self.loop_update_instr[i].imm == self.loop_step_val[i]'''
+-            self.loop_update_instr[i].comment = pkg_ins.format_string(
+-                "update loop {} counter".format(i))
+-            # Backward branch instruction
+-            self.loop_branch_instr[i] = riscv_instr.get_rand_instr(
+-                include_instr = [self.branch_type[i]])
+-            self.loop_branch_instr[i].randomize()
+-            with self.loop_branch_instr[i].randomize_with():
+-                self.loop_branch_instr[i].rs1 == self.loop_cnt_reg[i]
+-                # Getting PyVSC related error
+-                # TODO
+-                '''with vsc.if_then((self.branch_type[i] != riscv_instr_name_t.C_BEQZ) or
+-                                 (self.branch_type[i] != riscv_instr_name_t.C_BNEZ)):
+-                    self.loop_branch_instr[i].rs2 == self.loop_limit_reg[i]
+-                '''
+-            self.loop_branch_instr[i].comment = pkg_ins.format_string(
+-                "branch for loop {}".format(i))
+-            self.loop_branch_instr[i].imm_str = self.loop_branch_target_instr[i].label
+-            self.loop_branch_instr[i].branch_assigned = 1
+-        # Randomly distribute the loop instruction in the existing instruction stream
+-        self.build_loop_instr_stream()
++            with target.randomize_with():
++                with vsc.if_then(target.has_rd == 1):
++                    target.rd.not_inside(vsc.rangelist(bad + regs))
++            target.label = pkg_ins.format_string("{}_{}_t".format(self.label, i))
++            update = self.make_addi(cnt_regs[i], cnt_regs[i], step,
++                                    "update loop {} counter".format(i))
++            branch = riscv_instr.get_instr(br)
++            branch.rs1 = cnt_regs[i]
++            branch.rs2 = limit_regs[i]
++            branch.imm_str = target.label
++            branch.branch_assigned = 1
++            branch.comment = pkg_ins.format_string("branch for loop {}".format(i))
++            self.loop_instr = ([init_cnt, init_lim, target] + self.loop_instr +
++                               [update, branch])
++        logging.info("Loop stream: {} nested loop(s), {} instructions".format(
++            nested, len(self.loop_instr)))
+         self.mix_instr_stream(self.loop_instr, 1)
+         for i in range(len(self.instr_list)):
+-            if (self.instr_list[i].label != ""):
+-                self.instr_list[i].has_label = 1
+-            else:
+-                self.instr_list[i].has_label = 0
++            self.instr_list[i].has_label = 1 if self.instr_list[i].label != "" else 0
+             self.instr_list[i].atomic = 1
+ 
+     # Build the whole loop structure from innermost loop to the outermost loop
+diff --git a/pygen/pygen_src/riscv_utils.py b/pygen/pygen_src/riscv_utils.py
+index e64809b..8465d05 100644
+--- a/pygen/pygen_src/riscv_utils.py
++++ b/pygen/pygen_src/riscv_utils.py
+@@ -24,7 +24,10 @@ from pygen_src.riscv_amo_instr_lib import (riscv_lr_sc_instr_stream, riscv_amo_i
+ from pygen_src.riscv_load_store_instr_lib import (riscv_load_store_rand_instr_stream,
+                                                   riscv_load_store_hazard_instr_stream,
+                                                   riscv_load_store_stress_instr_stream,
+-                                                  riscv_single_load_store_instr_stream)
++                                                  riscv_single_load_store_instr_stream,
++                                                  riscv_hazard_instr_stream,
++                                                  riscv_multi_page_load_store_instr_stream,
++                                                  riscv_mem_region_stress_test)
+ 
+ 
+ # ----------------------------------------------------------
+@@ -43,7 +46,11 @@ def factory(obj_of):
+         "riscv_load_store_hazard_instr_stream": riscv_load_store_hazard_instr_stream,
+         "riscv_load_store_stress_instr_stream": riscv_load_store_stress_instr_stream,
+         "riscv_single_load_store_instr_stream": riscv_single_load_store_instr_stream,
+-        "riscv_loop_instr": riscv_loop_instr
++        "riscv_loop_instr": riscv_loop_instr,
++        # Fix: streams ported from the SV generator
++        "riscv_hazard_instr_stream": riscv_hazard_instr_stream,
++        "riscv_multi_page_load_store_instr_stream": riscv_multi_page_load_store_instr_stream,
++        "riscv_mem_region_stress_test": riscv_mem_region_stress_test
+     }
+ 
+     try:
+diff --git a/pygen/pygen_src/test/riscv_instr_base_test.py b/pygen/pygen_src/test/riscv_instr_base_test.py
+index 48a530a..d1dc24f 100644
+--- a/pygen/pygen_src/test/riscv_instr_base_test.py
++++ b/pygen/pygen_src/test/riscv_instr_base_test.py
+@@ -40,10 +40,13 @@ class riscv_instr_base_test:
+             raise Exception("Test-generation jobs failed")
+ 
+     def run_phase(self, num):
++        # Fix: the generator reports errors with sys.exit(1). SystemExit is not an
++        # Exception, so it killed the pool worker without a result and pool.map() waited
++        # forever. Catch it too, so a failed generation fails at once.
+         try:
+             self._run_phase(num)
+             return 0
+-        except Exception as e:
++        except (Exception, SystemExit):
+             traceback.print_exc()
+             return 1
+ 

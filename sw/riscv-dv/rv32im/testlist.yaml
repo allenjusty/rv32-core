@@ -1,0 +1,96 @@
+# riscv-dv tests for the RV32IM core (PyFlow generator). Based on riscv-dv's
+# base_testlist.yaml, with only the tests that fit a machine-mode RV32IM core
+# without interrupts, PMP, debug mode or compressed instructions.
+# The PyFlow generator needed fixes to run these tests: sw/riscv-dv/pyflow_fixes.patch
+# (apply to riscv-dv commit f557b89). Still not supported: sub-programs
+# (num_of_sub_program must be 0); calls are exercised by riscv_jal_instr and jump.S.
+
+- test: riscv_arithmetic_basic_test
+  description: Arithmetic only, with numeric corner values
+  iterations: 1
+  gen_test: riscv_instr_base_test
+  gen_opts: >
+    +instr_cnt=5000
+    +num_of_sub_program=0
+    +directed_instr_0=riscv_int_numeric_corner_stream,4
+    +no_fence=1
+    +no_data_page=1
+    +no_branch_jump=1
+    +boot_mode=m
+    +no_csr_instr=1
+  rtl_test: core_base_test
+
+- test: riscv_rand_instr_test
+  description: Random mix with loads/stores, load/store hazards and jumps
+  iterations: 1
+  gen_test: riscv_instr_base_test
+  gen_opts: >
+    +instr_cnt=5000
+    +num_of_sub_program=0
+    +directed_instr_0=riscv_load_store_rand_instr_stream,4
+    +directed_instr_1=riscv_loop_instr,4
+    +directed_instr_2=riscv_hazard_instr_stream,4
+    +directed_instr_3=riscv_load_store_hazard_instr_stream,4
+    +directed_instr_4=riscv_multi_page_load_store_instr_stream,4
+    +directed_instr_5=riscv_mem_region_stress_test,4
+    +directed_instr_6=riscv_jal_instr,4
+    +boot_mode=m
+  rtl_test: core_base_test
+
+- test: riscv_jump_stress_test
+  description: Many JAL/JALR jumps between sub-programs
+  iterations: 1
+  gen_test: riscv_instr_base_test
+  gen_opts: >
+    +instr_cnt=5000
+    +num_of_sub_program=0
+    +directed_instr_1=riscv_jal_instr,20
+    +boot_mode=m
+  rtl_test: core_base_test
+
+- test: riscv_mmu_stress_test
+  description: Load/store heavy, with load-store hazards
+  iterations: 1
+  gen_test: riscv_instr_base_test
+  gen_opts: >
+    +instr_cnt=5000
+    +num_of_sub_program=0
+    +directed_instr_0=riscv_load_store_rand_instr_stream,20
+    +directed_instr_1=riscv_load_store_hazard_instr_stream,20
+    +directed_instr_2=riscv_multi_page_load_store_instr_stream,5
+    +directed_instr_3=riscv_mem_region_stress_test,5
+    +boot_mode=m
+  rtl_test: core_base_test
+
+- test: riscv_ebreak_test
+  description: EBREAK instructions mixed in
+  iterations: 1
+  gen_test: riscv_instr_base_test
+  gen_opts: >
+    +instr_cnt=5000
+    +num_of_sub_program=0
+    +no_ebreak=0
+    +boot_mode=m
+  rtl_test: core_base_test
+
+- test: riscv_illegal_instr_test
+  description: Random illegal instructions mixed in (trap and skip)
+  iterations: 1
+  gen_test: riscv_instr_base_test
+  gen_opts: >
+    +instr_cnt=5000
+    +num_of_sub_program=0
+    +illegal_instr_ratio=5
+    +boot_mode=m
+  rtl_test: core_base_test
+
+- test: riscv_loop_test
+  description: Nested loops (branch prediction, BHT training)
+  iterations: 1
+  gen_test: riscv_instr_base_test
+  gen_opts: >
+    +instr_cnt=5000
+    +num_of_sub_program=0
+    +directed_instr_1=riscv_loop_instr,20
+    +boot_mode=m
+  rtl_test: core_base_test
