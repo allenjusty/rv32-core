@@ -9,8 +9,9 @@ on:
 
 env:
   VERILATOR_VERSION: v5.054
-  SPIKE_COMMIT: 6e188877          # pinned: the commit-log parser depends on Spike's log format
-  RISCV_DV_COMMIT: f557b89
+  SPIKE_COMMIT: "6e188877"        # pinned: the commit-log parser depends on Spike's log format
+                                  # (quoted: unquoted, YAML 1.2 reads 6e188877 as a number)
+  RISCV_DV_COMMIT: "f557b89"
   XPACK_GCC: 15.2.0-1
 
 jobs:
@@ -55,6 +56,8 @@ jobs:
       - name: Build Spike
         if: steps.cache-spike.outputs.cache-hit != 'true'
         run: |
+          trap 'echo "::error::Build Spike failed at: $BASH_COMMAND"' ERR
+          echo "::notice::Spike commit $SPIKE_COMMIT"
           git clone https://github.com/riscv-software-src/riscv-isa-sim.git spike-src
           cd spike-src && git checkout $SPIKE_COMMIT
           git submodule update --init --recursive      # berkeley-softfloat-3 is a submodule
