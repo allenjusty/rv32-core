@@ -24,7 +24,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y git autoconf flex bison help2man perl make g++ \
-               libfl-dev zlib1g-dev ccache z3 python3 python3-venv device-tree-compiler libboost-regex-dev
+               libfl-dev zlib1g-dev ccache z3 python3 python3-venv device-tree-compiler
 
       # ---------------------------------------------------------------- Verilator
       - name: Restore Verilator
@@ -57,7 +57,7 @@ jobs:
         run: |
           git clone https://github.com/riscv-software-src/riscv-isa-sim.git spike-src
           cd spike-src && git checkout $SPIKE_COMMIT && mkdir build && cd build
-          ../configure --prefix=$HOME/spike && make -j$(nproc) && make install
+          ../configure --prefix=$HOME/spike --with-boost=no && make -j$(nproc) && make install
       - name: Save Spike
         if: steps.cache-spike.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4
