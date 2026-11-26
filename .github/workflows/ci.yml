@@ -56,7 +56,9 @@ jobs:
         if: steps.cache-spike.outputs.cache-hit != 'true'
         run: |
           git clone https://github.com/riscv-software-src/riscv-isa-sim.git spike-src
-          cd spike-src && git checkout $SPIKE_COMMIT && mkdir build && cd build
+          cd spike-src && git checkout $SPIKE_COMMIT
+          git submodule update --init --recursive      # berkeley-softfloat-3 is a submodule
+          mkdir build && cd build
           ../configure --prefix=$HOME/spike --with-boost=no && make -j$(nproc) && make install
       - name: Save Spike
         if: steps.cache-spike.outputs.cache-hit != 'true'
@@ -83,7 +85,11 @@ jobs:
           cp -r test_regress/t/uvm/v2017_1_0/dpi $HOME/uvm/
           printf '`ifndef UVM_MACROS_SVH\n`error "compile the UVM package first"\n`endif\n' > $HOME/uvm/uvm_macros.svh
 
-      - name: Get riscv-dv and CoreMark
+      - name: Get CoreMark
+        run: git clone --depth 1 https://github.com/eembc/coremark.git $HOME/coremark
+
+      - name: Get riscv-dv (nightly)
+        if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
         run: |
           git clone https://github.com/chipsalliance/riscv-dv.git $HOME/riscv-dv
           cd $HOME/riscv-dv && git checkout $RISCV_DV_COMMIT
@@ -92,7 +98,6 @@ jobs:
           $HOME/dvenv/bin/pip install -q PyYAML bitstring tabulate "pandas<=2.2.3" \
               pyvsc==0.9.1.10086043874 pyucis==0.1.3.7162246580 pyboolector==3.2.4.20240823.1
           ln -s $GITHUB_WORKSPACE/sw/riscv-dv/rv32im $HOME/riscv-dv/pygen/pygen_src/target/rv32im
-          git clone --depth 1 https://github.com/eembc/coremark.git $HOME/coremark
 
       # ---------------------------------------------------------------- build and run
       - name: Lint, directed tests on the smoke bench (with and without wait states)
